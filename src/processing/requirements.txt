@@ -1,0 +1,4 @@
+quixstreams
+h3
+psycopg2-binary
+python-dotenv

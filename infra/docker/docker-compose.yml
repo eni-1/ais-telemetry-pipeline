@@ -1,0 +1,106 @@
+services:
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.10
+    container_name: redpanda
+    command:
+      - redpanda start
+      - --smp 1 
+      - --memory 1G
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      - --kafka-addr internal://0.0.0.0:29092,external://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:29092,external://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    networks:
+      - portpulse-net
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy'"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: portpulse-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password123}
+      POSTGRES_DB: ${POSTGRES_DB:-portpulse}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - portpulse-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d portpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+  
+  processor:
+    build:
+      context: ../../src/processing
+      dockerfile: Dockerfile
+    container_name: portpulse-processor
+    restart: on-failure
+    environment:
+      REDPANDA_HOST: "redpanda:29092"
+      DB_HOST: "timescaledb"
+      DB_NAME: "portpulse"
+      DB_USER: "admin"
+      DB_PASS: "password123"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    volumes:
+      - processor-state:/app/state
+    networks:
+      - portpulse-net
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.3
+    container_name: redpanda-console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: "redpanda:29092"
+    depends_on:
+      - redpanda
+    networks:
+      - portpulse-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: portpulse-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - portpulse-net
+    depends_on:
+      - timescaledb
+
+networks:
+  portpulse-net:
+    driver: bridge
+
+volumes:
+  redpanda-data:
+  pg-data:
+  processor-state:
+  grafana-storage:
